@@ -368,6 +368,7 @@ type Game struct {
 	bTheory     float64
 	bCenter     float64
 	heatmapMax  float64
+	heatmapAuto bool
 
 	extZ, extY float64 // world extents for coordinate mapping
 
@@ -378,12 +379,13 @@ func newGame() *Game {
 	return &Game{
 		D:          0.10, // 10 cm
 		L:          0.30, // 30 cm
-		N:          100,
-		I:          1.0,
-		scale:      1.5,
-		dirty:      true,
-		holdFrames: make(map[ebiten.Key]int),
-	}
+			N:          100,
+			I:          1.0,
+			scale:      1.5,
+			dirty:      true,
+			heatmapAuto: true,
+			holdFrames: make(map[ebiten.Key]int),
+		}
 }
 
 // keyRepeat returns true on first press, then after a delay repeats every few frames.
@@ -460,7 +462,17 @@ func (g *Game) recompute() {
 	g.bCenter = math.Hypot(cBr[0], cBz[0])
 
 	// render heatmap to a small image (nz × ny), Ebiten scales it up
-	if g.heatmapMax < 1e-15 {
+	currentMax := 0.0
+	for j := 0; j < ny; j++ {
+		for i := 0; i < nz; i++ {
+			if bMag2D[j][i] > currentMax {
+				currentMax = bMag2D[j][i]
+			}
+		}
+	}
+	if g.heatmapAuto {
+		g.heatmapMax = 1.05 * currentMax
+	} else if g.heatmapMax < 1e-15 {
 		g.heatmapMax = 1.5 * g.bTheory
 	}
 	if g.heatmapMax < 1e-15 {
@@ -544,7 +556,17 @@ func (g *Game) Update() error {
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyR) {
 		g.D, g.L, g.N, g.I, g.scale = 0.10, 0.30, 100, 1.0, 1.5
+		g.heatmapAuto = true
 		g.heatmapMax = 0
+		g.dirty = true
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyH) {
+		if g.heatmapAuto {
+			g.heatmapAuto = false
+			g.heatmapMax = 1.5 * g.bTheory
+		} else {
+			g.heatmapAuto = true
+		}
 		g.dirty = true
 	}
 
@@ -614,13 +636,17 @@ func (g *Game) Draw(screen *ebiten.Image) {
 
 	// parameter info (top-left)
 	white := color.RGBA{220, 220, 220, 255}
+	modeLabel := "Auto"
+	if !g.heatmapAuto {
+		modeLabel = "Fixed"
+	}
 	text.Draw(screen, fmt.Sprintf("D = %.1f cm   [D / Shift+D]", g.D*100), face, 10, 20, white)
 	text.Draw(screen, fmt.Sprintf("L = %.0f cm    [L / Shift+L]", g.L*100), face, 10, 36, white)
 	text.Draw(screen, fmt.Sprintf("N = %d         [N / Shift+N]", g.N), face, 10, 52, white)
 	text.Draw(screen, fmt.Sprintf("I = %.1f A     [I / Shift+I]", g.I), face, 10, 68, white)
 	text.Draw(screen, fmt.Sprintf("Scale %.1fx     [+/-]", g.scale), face, 10, 84, white)
 	text.Draw(screen, "[R] reset", face, 10, 100, color.RGBA{150, 150, 150, 255})
-	text.Draw(screen, "Heatmap: |B|, fixed scale", face, 10, 116, color.RGBA{180, 180, 180, 255})
+	text.Draw(screen, fmt.Sprintf("[H] heatmap scale: %s", modeLabel), face, 10, 116, color.RGBA{180, 180, 180, 255})
 
 	// field info (bottom-left)
 	yellow := color.RGBA{240, 200, 80, 255}
@@ -646,6 +672,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	text.Draw(screen, "0", face, legendX, legendY+legendH+12, gray)
 	text.Draw(screen, formatField(g.heatmapMax), face, legendX+legendW-70, legendY+legendH+12, gray)
 	text.Draw(screen, "|B|", face, legendX+legendW/2-8, legendY-4, white)
+	text.Draw(screen, modeLabel, face, legendX, legendY-4, gray)
 }
 
 func (g *Game) Layout(_, _ int) (int, int) {
