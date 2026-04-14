@@ -575,11 +575,33 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	}
 
 	lineClr := color.RGBA{255, 255, 255, 150}
+	arrowClr := color.RGBA{255, 255, 255, 210}
 	for _, line := range g.streamlines {
 		for k := 0; k < len(line)-1; k++ {
 			x1, y1 := g.worldToScreen(line[k].x, line[k].y)
 			x2, y2 := g.worldToScreen(line[k+1].x, line[k+1].y)
 			vector.StrokeLine(screen, x1, y1, x2, y2, 1.2, lineClr, true)
+		}
+		arrowStep := len(line) / 2
+		if arrowStep < 30 {
+			arrowStep = 30
+		}
+		for k := arrowStep / 2; k < len(line)-1; k += arrowStep {
+			x1, y1 := g.worldToScreen(line[k-1].x, line[k-1].y)
+			x2, y2 := g.worldToScreen(line[k].x, line[k].y)
+			dx, dy := x2-x1, y2-y1
+			mag := float32(math.Sqrt(float64(dx*dx + dy*dy)))
+			if mag < 0.5 {
+				continue
+			}
+			dx /= mag
+			dy /= mag
+			const aLen = 7.0
+			const aCos = 0.906 // cos(25°)
+			const aSin = 0.423 // sin(25°)
+			bx, by := -dx, -dy
+			vector.StrokeLine(screen, x2, y2, x2+(bx*aCos-by*aSin)*aLen, y2+(bx*aSin+by*aCos)*aLen, 1.2, arrowClr, true)
+			vector.StrokeLine(screen, x2, y2, x2+(bx*aCos+by*aSin)*aLen, y2+(-bx*aSin+by*aCos)*aLen, 1.2, arrowClr, true)
 		}
 	}
 
