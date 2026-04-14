@@ -18,8 +18,8 @@ const (
 	screenHeight = 800
 	mu0          = 4 * math.Pi * 1e-7
 
-	gridNZ = 161 // physics grid resolution (z axis)
-	gridNY = 101 // physics grid resolution (y axis)
+	gridNZ = 161
+	gridNY = 101
 )
 
 // ──────────────────────────────────────────────
@@ -189,9 +189,6 @@ func computeStreamlines(zLin, yLin []float64, Bz, By [][]float64, L, R, scale fl
 	if N > 0 {
 		pitch = L / float64(N)
 	}
-	// Do not trace too close to the discrete wire positions: the analytical loop
-	// field is singular there, and the interpolated streamline integrator produces
-	// visible numerical curls instead of a clean macroscopic solenoid pattern.
 	wireGuard := math.Max(dt*1.5, pitch*0.75)
 	blocked := func(z, y float64) bool {
 		if len(centers) == 0 {
@@ -223,7 +220,6 @@ func computeStreamlines(zLin, yLin []float64, Bz, By [][]float64, L, R, scale fl
 		return bz, by, true
 	}
 
-	// trace one direction: dir=+1 forward, dir=-1 backward
 	traceHalf := func(seed vec2, dir float64, maxSteps int) []vec2 {
 		if blocked(seed.x, seed.y) {
 			return nil
@@ -265,12 +261,10 @@ func computeStreamlines(zLin, yLin []float64, Bz, By [][]float64, L, R, scale fl
 
 	var seeds []vec2
 
-	// Внутри соленоида: несколько радиусов от левого торца
 	for _, f := range []float64{-0.9, -0.7, -0.5, -0.3, -0.1, 0.0, 0.1, 0.3, 0.5, 0.7, 0.9} {
 		seeds = append(seeds, vec2{-L / 2, f * R * 0.95})
 	}
 
-	// Вблизи оси: больше точек по z
 	nAxis := 15
 	if scale > 3 {
 		nAxis = 21
@@ -281,13 +275,11 @@ func computeStreamlines(zLin, yLin []float64, Bz, By [][]float64, L, R, scale fl
 		seeds = append(seeds, vec2{zs, 0.01 * R}, vec2{zs, -0.01 * R})
 	}
 
-	// Снаружи торцов: дальше и с большим радиусом
 	for _, f := range []float64{-0.8, -0.5, -0.2, 0.2, 0.5, 0.8} {
 		seeds = append(seeds, vec2{-L/2 - 0.2*L, f * R * 1.8})
 		seeds = append(seeds, vec2{L/2 + 0.2*L, f * R * 1.8})
 	}
 
-	// На поверхности соленоида (вдоль боковой стенки)
 	for _, f := range []float64{-0.45, -0.25, 0.0, 0.25, 0.45} {
 		seeds = append(seeds, vec2{f * L, R * 1.12}, vec2{f * L, -R * 1.12})
 	}
@@ -299,7 +291,6 @@ func computeStreamlines(zLin, yLin []float64, Bz, By [][]float64, L, R, scale fl
 		fwd := traceHalf(s, +1, maxSteps)
 		bwd := traceHalf(s, -1, maxSteps)
 
-		// combine: reversed backward + forward (skip duplicate seed)
 		line := make([]vec2, 0, len(bwd)+len(fwd))
 		for i := len(bwd) - 1; i >= 0; i-- {
 			line = append(line, bwd[i])
@@ -370,15 +361,15 @@ type Game struct {
 	heatmapMax  float64
 	heatmapAuto bool
 
-	extZ, extY float64 // world extents for coordinate mapping
+	extZ, extY float64
 
-	holdFrames map[ebiten.Key]int // frames each key has been held
+	holdFrames map[ebiten.Key]int
 }
 
 func newGame() *Game {
 	return &Game{
-		D:          0.10, // 10 cm
-		L:          0.30, // 30 cm
+		D:          0.10,
+		L:          0.30,
 			N:          100,
 			I:          1.0,
 			scale:      1.5,
@@ -388,8 +379,6 @@ func newGame() *Game {
 		}
 }
 
-// keyRepeat returns true on first press, then after a delay repeats every few frames.
-// Initial delay: 20 frames (~333ms), repeat every 4 frames (~67ms).
 func (g *Game) keyRepeat(key ebiten.Key) bool {
 	if ebiten.IsKeyPressed(key) {
 		g.holdFrames[key]++
@@ -407,7 +396,6 @@ func (g *Game) worldToScreen(wz, wy float64) (float32, float32) {
 }
 
 func (g *Game) recompute() {
-	// extents with correct aspect ratio
 	base := g.scale * math.Max(g.L, g.D)
 	g.extY = base
 	g.extZ = base * float64(screenWidth) / float64(screenHeight)
@@ -416,7 +404,6 @@ func (g *Game) recompute() {
 	zLin := linspace(-g.extZ, g.extZ, nz)
 	yLin := linspace(-g.extY, g.extY, ny)
 
-	// flatten grid for solenoid computation
 	size := nz * ny
 	rFlat := make([]float64, size)
 	zFlat := make([]float64, size)
@@ -430,7 +417,6 @@ func (g *Game) recompute() {
 
 	BrFlat, BzFlat := solenoidField(g.D, g.L, g.N, g.I, rFlat, zFlat)
 
-	// build 2D field arrays
 	R := g.D / 2
 	Bz2D := make([][]float64, ny)
 	By2D := make([][]float64, ny)
@@ -461,7 +447,6 @@ func (g *Game) recompute() {
 	cBr, cBz := solenoidField(g.D, g.L, g.N, g.I, []float64{0}, []float64{0})
 	g.bCenter = math.Hypot(cBr[0], cBz[0])
 
-	// render heatmap to a small image (nz × ny), Ebiten scales it up
 	currentMax := 0.0
 	for j := 0; j < ny; j++ {
 		for i := 0; i < nz; i++ {
@@ -481,7 +466,7 @@ func (g *Game) recompute() {
 
 	pix := make([]byte, nz*ny*4)
 	for j := 0; j < ny; j++ {
-		screenJ := ny - 1 - j // flip y: grid j=0 is bottom, pixel row 0 is top
+		screenJ := ny - 1 - j
 		for i := 0; i < nz; i++ {
 			t := bMag2D[j][i] / g.heatmapMax
 			r, g, b := plasmaColor(t)
@@ -496,7 +481,6 @@ func (g *Game) recompute() {
 	img.WritePixels(pix)
 	g.bgImage = img
 
-	// streamlines
 	g.streamlines = computeStreamlines(zLin, yLin, Bz2D, By2D, g.L, R, g.scale, nz, ny, g.N)
 }
 
@@ -582,7 +566,6 @@ func (g *Game) Update() error {
 // ──────────────────────────────────────────────
 
 func (g *Game) Draw(screen *ebiten.Image) {
-	// background heatmap (scaled up from low-res image)
 	if g.bgImage != nil {
 		op := &ebiten.DrawImageOptions{}
 		bw, bh := g.bgImage.Bounds().Dx(), g.bgImage.Bounds().Dy()
@@ -591,7 +574,6 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		screen.DrawImage(g.bgImage, op)
 	}
 
-	// streamlines
 	lineClr := color.RGBA{255, 255, 255, 150}
 	for _, line := range g.streamlines {
 		for k := 0; k < len(line)-1; k++ {
@@ -601,7 +583,6 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		}
 	}
 
-	// solenoid outline
 	halfL := g.L / 2
 	R := g.D / 2
 	tlx, tly := g.worldToScreen(-halfL, R)
@@ -614,7 +595,6 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	vector.StrokeLine(screen, tlx, tly, blx, bly, 2, cyan, true)
 	vector.StrokeLine(screen, trx, try_, brx, bry, 2, cyan, true)
 
-	// Рисуем несколько линий витков
 	nLines := 9
 	if g.N > 0 {
 		nLines = min(9, g.N)
@@ -628,13 +608,11 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		vector.StrokeLine(screen, x1, y1, x2, y2, 1.0, lineColor, true)
 	}
 
-	// axis labels (z and y)
 	face := basicfont.Face7x13
 	gray := color.RGBA{130, 130, 130, 255}
 	text.Draw(screen, "z", face, screenWidth-20, screenHeight/2+16, gray)
 	text.Draw(screen, "y", face, screenWidth/2+6, 16, gray)
 
-	// parameter info (top-left)
 	white := color.RGBA{220, 220, 220, 255}
 	modeLabel := "Auto"
 	if !g.heatmapAuto {
@@ -648,7 +626,6 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	text.Draw(screen, "[R] reset", face, 10, 100, color.RGBA{150, 150, 150, 255})
 	text.Draw(screen, fmt.Sprintf("[H] heatmap scale: %s", modeLabel), face, 10, 116, color.RGBA{180, 180, 180, 255})
 
-	// field info (bottom-left)
 	yellow := color.RGBA{240, 200, 80, 255}
 	orange := color.RGBA{200, 160, 100, 255}
 	text.Draw(screen, fmt.Sprintf("B(center) = %s", formatField(g.bCenter)), face, 10, screenHeight-30, yellow)
