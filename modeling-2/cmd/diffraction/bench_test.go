@@ -12,7 +12,7 @@ func benchFFT2D(b *testing.B, N int) {
 		src[i] = complex(rng.Float64(), rng.Float64())
 	}
 	buf := make([]complex128, N*N)
-	twiddles(N) // warm cache
+	twiddles(N)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		copy(buf, src)

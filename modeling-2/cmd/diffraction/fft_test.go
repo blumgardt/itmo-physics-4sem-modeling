@@ -6,7 +6,6 @@ import (
 	"testing"
 )
 
-// TestFFT1DImpulse verifies that FFT of a unit impulse is a flat spectrum (all ones).
 func TestFFT1DImpulse(t *testing.T) {
 	N := 16
 	data := make([]complex128, N)
@@ -19,7 +18,6 @@ func TestFFT1DImpulse(t *testing.T) {
 	}
 }
 
-// TestFFT1DConstant verifies FFT of constant is DC-only.
 func TestFFT1DConstant(t *testing.T) {
 	N := 32
 	data := make([]complex128, N)
@@ -38,8 +36,6 @@ func TestFFT1DConstant(t *testing.T) {
 	}
 }
 
-// TestFFT1DSine verifies FFT of a complex exponential e^{+i 2π k0 n/N} lands at bin k0.
-// (Our forward FFT uses kernel e^{-i 2π kn/N}, so positive-frequency input peaks at +k0.)
 func TestFFT1DSine(t *testing.T) {
 	N := 64
 	k0 := 5
@@ -60,11 +56,6 @@ func TestFFT1DSine(t *testing.T) {
 	}
 }
 
-// TestFFT2DRectSincZero verifies that a rectangular aperture's |FFT|² profile
-// has a clear sinc² zero near the predicted bin (with discretization tolerance).
-//
-// A discrete rect of (2a+1) ones along x ↔ Dirichlet kernel D(k) = sin(π(2a+1)k/N)/sin(πk/N).
-// First zero at k = N/(2a+1). For a=8, N=128, that's k ≈ 7.5 from DC, so 64 + ~7 or ~8.
 func TestFFT2DRectSincZero(t *testing.T) {
 	N := 128
 	a := 8
@@ -93,11 +84,9 @@ func TestFFT2DRectSincZero(t *testing.T) {
 		}
 	}
 
-	// Predicted first Dirichlet zero (bin from center)
-	predicted := float64(N) / float64(2*a+1) // ≈ 7.53
+	predicted := float64(N) / float64(2*a+1)
 	rowOffset := cy * N
 
-	// Scan right half of central row, find first deep minimum.
 	bestIdx := -1
 	bestVal := Imax
 	for k := cx + 2; k < N; k++ {
@@ -107,7 +96,6 @@ func TestFFT2DRectSincZero(t *testing.T) {
 			bestVal = I
 			bestIdx = k
 		}
-		// stop search after second-order maximum
 		if k-cx > int(predicted*1.5) {
 			break
 		}
@@ -119,18 +107,12 @@ func TestFFT2DRectSincZero(t *testing.T) {
 	if math.Abs(off-predicted) > 1.5 {
 		t.Fatalf("sinc² first zero offset = %.2f bins, predicted %.2f", off, predicted)
 	}
-	// For a discrete rect of width W=2a+1 with W∤N, the FFT samples the Dirichlet
-	// kernel at integer bins straddling the true zero — local minimum reaches
-	// at most ~1/W² of the peak rather than exact zero. Loose check is enough
-	// to confirm sinc-shape behaviour.
 	if bestVal/Imax > 0.01 {
 		t.Fatalf("first minimum not deep enough: I/Imax = %g at bin offset %.1f",
 			bestVal/Imax, off)
 	}
 }
 
-// TestFFT2DCheckerboardCentersDC: a constant aperture, after checkerboard sign and FFT,
-// must have its peak at index (N/2, N/2).
 func TestFFT2DCheckerboardCentersDC(t *testing.T) {
 	N := 32
 	data := make([]complex128, N*N)

@@ -33,9 +33,9 @@ const (
 	panelX2   = 608
 
 	defaultN      = 512
-	defaultLambda = 550e-9 // m (green)
-	defaultL      = 0.5    // m
-	defaultDx     = 1e-6   // m per aperture pixel
+	defaultLambda = 550e-9
+	defaultL      = 0.5
+	defaultDx     = 1e-6
 
 	lambdaR = 650e-9
 	lambdaG = 550e-9
@@ -46,7 +46,6 @@ const (
 // FFT (Cooley–Tukey radix-2 DIT)
 // ──────────────────────────────────────────────
 
-// twiddleTable caches twiddle factors per N (power of two).
 var (
 	twiddleCache = map[int][]complex128{}
 	twiddleMu    sync.Mutex
@@ -67,7 +66,6 @@ func twiddles(N int) []complex128 {
 	return t
 }
 
-// bitReverse permutes data in place to bit-reversed order.
 func bitReverse(data []complex128) {
 	N := len(data)
 	j := 0
@@ -83,8 +81,6 @@ func bitReverse(data []complex128) {
 	}
 }
 
-// fft1D performs in-place forward FFT. len(data) must be a power of two.
-// tw must be twiddles(N).
 func fft1D(data []complex128, tw []complex128) {
 	N := len(data)
 	bitReverse(data)
@@ -102,7 +98,6 @@ func fft1D(data []complex128, tw []complex128) {
 	}
 }
 
-// fft2D performs in-place 2D FFT on N×N row-major data using parallel workers.
 func fft2D(data []complex128, N int) {
 	tw := twiddles(N)
 	nWorkers := runtime.NumCPU()
@@ -110,7 +105,6 @@ func fft2D(data []complex128, N int) {
 		nWorkers = N
 	}
 
-	// Phase 1: FFT each row.
 	var wg sync.WaitGroup
 	rowsPerWorker := (N + nWorkers - 1) / nWorkers
 	for w := 0; w < nWorkers; w++ {
@@ -132,7 +126,6 @@ func fft2D(data []complex128, N int) {
 	}
 	wg.Wait()
 
-	// Phase 2: FFT each column (gather into buffer, FFT, scatter back).
 	for w := 0; w < nWorkers; w++ {
 		start := w * rowsPerWorker
 		end := start + rowsPerWorker
@@ -174,9 +167,6 @@ const (
 	apPaint     = 6
 )
 
-// buildAperture writes t(x,y)·(-1)^(m+n) into data (length N²).
-// dx is the physical step. apW, apH, apD are aperture parameters in meters.
-// For grating: apW = slit width, apD = period, apNSlits = number of slits.
 func buildAperture(data []complex128, N int, dx float64, apType int,
 	apW, apH, apD float64, apNSlits int, paint []float64) {
 
@@ -217,7 +207,6 @@ func buildAperture(data []complex128, N int, dx float64, apType int,
 							v = 1
 						}
 					case apDoubleSlt:
-						// two slits of width apW, separation apD, height apH
 						if math.Abs(y) <= halfH {
 							if math.Abs(math.Abs(x)-apD/2) <= apW/2 {
 								v = 1
@@ -225,12 +214,10 @@ func buildAperture(data []complex128, N int, dx float64, apType int,
 						}
 					case apGrating:
 						if math.Abs(y) <= halfH {
-							// nSlits slits, period apD, slit width apW
 							totalSpan := float64(apNSlits-1) * apD
 							leftEdge := -totalSpan / 2
 							rel := x - leftEdge
 							if rel >= -apW/2 && rel <= totalSpan+apW/2 {
-								// nearest slit index
 								idx := math.Floor(rel/apD + 0.5)
 								if idx >= 0 && idx < float64(apNSlits) {
 									slitCenter := leftEdge + idx*apD
@@ -241,14 +228,11 @@ func buildAperture(data []complex128, N int, dx float64, apType int,
 							}
 						}
 					case apCross:
-						// horizontal bar of half-height apH and half-width apW;
-						// vertical bar of half-width apH and half-height apW
 						if (math.Abs(x) <= halfW && math.Abs(y) <= halfH) ||
 							(math.Abs(x) <= halfH && math.Abs(y) <= halfW) {
 							v = 1
 						}
 					case apRing:
-						// annulus: outer radius apW/2, inner radius apD/2
 						r2 := x*x + y*y
 						if r2 <= halfW*halfW && r2 >= (apD/2)*(apD/2) {
 							v = 1
@@ -258,7 +242,6 @@ func buildAperture(data []complex128, N int, dx float64, apType int,
 							v = paint[j*N+i]
 						}
 					}
-					// checkerboard sign to fold in fftshift
 					if (i+j)&1 == 1 {
 						v = -v
 					}
@@ -280,7 +263,6 @@ const (
 	dispLinear = 2
 )
 
-// transformIntensity maps raw |U|² to [0,1] visible range.
 func transformIntensity(I, Imax float64, mode int, gamma, logAlpha float64) float64 {
 	if Imax <= 0 {
 		return 0
@@ -372,45 +354,37 @@ func bilinear(I []float64, N int, x, y float64) float64 {
 // ──────────────────────────────────────────────
 
 type Game struct {
-	// Physical parameters
-	lambda float64 // wavelength (m)
-	L      float64 // distance to screen (m)
-	dx     float64 // grid step (m)
-	N      int     // grid size (power of 2)
+	lambda float64
+	L      float64
+	dx     float64
+	N      int
 
-	// Aperture
 	apType   int
-	apW      float64 // m
-	apH      float64 // m
-	apD      float64 // m
+	apW      float64
+	apH      float64
+	apD      float64
 	apNSlits int
 
-	// Paint mode
 	paintBuf  []float64
 	painting  bool
 	lastPaint image.Point
 	hasLast   bool
 
-	// Display
-	colorMode   int     // 0 mono, 1 RGB
-	displayMode int     // 0 log, 1 gamma, 2 linear
-	gamma       float64 // for gamma mode
-	logAlpha    float64 // for log mode
+	colorMode   int
+	displayMode int
+	gamma       float64
+	logAlpha    float64
 
-	// Internal buffers (sized for current N)
 	apertureBuf []complex128
 	fftBuf      []complex128
 	intensity   []float64
 
-	// Computed images
 	apImage   *ebiten.Image
 	diffImage *ebiten.Image
 
-	// Stats
 	lastRecomputeMs float64
 	dirty           bool
 
-	// Input
 	holdFrames map[ebiten.Key]int
 }
 
@@ -465,18 +439,12 @@ func (g *Game) keyRepeat(key ebiten.Key) bool {
 func (g *Game) recompute() {
 	t0 := time.Now()
 
-	// Step 1: build aperture with checkerboard sign
 	buildAperture(g.apertureBuf, g.N, g.dx, g.apType, g.apW, g.apH, g.apD, g.apNSlits, g.paintBuf)
 
-	// Step 2: copy to FFT working buffer
 	copy(g.fftBuf, g.apertureBuf)
 
-	// Step 3: 2D FFT
 	fft2D(g.fftBuf, g.N)
 
-	// Step 4: intensity |U|² (FFT layout: index k maps to physical X = (k - N/2) * DX_λ;
-	// thanks to the checkerboard pre-multiplication, the zero-frequency component
-	// already lands at index N/2 — no fftshift required.)
 	n2 := g.N * g.N
 	parallelFor(n2, func(idx int) {
 		c := g.fftBuf[idx]
@@ -484,7 +452,6 @@ func (g *Game) recompute() {
 		g.intensity[idx] = re*re + im*im
 	})
 
-	// Step 5: max for normalization
 	Imax := 0.0
 	for _, v := range g.intensity {
 		if v > Imax {
@@ -495,14 +462,12 @@ func (g *Game) recompute() {
 		Imax = 1
 	}
 
-	// Step 6: render aperture and diffraction images
 	g.renderApertureImage()
 	g.renderDiffractionImage(Imax)
 
 	g.lastRecomputeMs = float64(time.Since(t0).Microseconds()) / 1000.0
 }
 
-// parallelFor splits [0,n) over CPUs.
 func parallelFor(n int, fn func(i int)) {
 	nWorkers := runtime.NumCPU()
 	if nWorkers > n {
@@ -541,7 +506,6 @@ func (g *Game) renderApertureImage() {
 	pix := make([]byte, N*N*4)
 	parallelFor(N, func(j int) {
 		for i := 0; i < N; i++ {
-			// extract original aperture magnitude (undo checkerboard sign)
 			c := g.apertureBuf[j*N+i]
 			v := real(c)
 			if (i+j)&1 == 1 {
@@ -569,7 +533,6 @@ func (g *Game) renderDiffractionImage(Imax float64) {
 	pix := make([]byte, N*N*4)
 
 	if g.colorMode == 0 {
-		// Mono: 1:1 mapping, plasma colormap
 		parallelFor(N, func(j int) {
 			for i := 0; i < N; i++ {
 				v := transformIntensity(g.intensity[j*N+i], Imax, g.displayMode, g.gamma, g.logAlpha)
@@ -582,8 +545,6 @@ func (g *Game) renderDiffractionImage(Imax float64) {
 			}
 		})
 	} else {
-		// RGB: sample intensity at scale factor lambdaR/lambda for each channel.
-		// Display window matches lambdaR (red just fills the panel).
 		half := float64(N) / 2
 		lambdas := [3]float64{lambdaR, lambdaG, lambdaB}
 		parallelFor(N, func(j int) {
@@ -619,7 +580,6 @@ func (g *Game) renderDiffractionImage(Imax float64) {
 func (g *Game) Update() error {
 	shift := ebiten.IsKeyPressed(ebiten.KeyShift)
 
-	// Aperture presets
 	for key, idx := range map[ebiten.Key]int{
 		ebiten.KeyDigit1: apRect,
 		ebiten.KeyDigit2: apCircle,
@@ -641,7 +601,6 @@ func (g *Game) Update() error {
 		g.dirty = true
 	}
 
-	// Wavelength
 	if g.keyRepeat(ebiten.KeyEqual) || g.keyRepeat(ebiten.KeyKPAdd) {
 		g.lambda += 10e-9
 		if g.lambda > 780e-9 {
@@ -657,7 +616,6 @@ func (g *Game) Update() error {
 		g.dirty = true
 	}
 
-	// Distance L
 	if g.keyRepeat(ebiten.KeyL) {
 		if shift {
 			g.L = math.Max(0.05, g.L-0.05)
@@ -667,7 +625,6 @@ func (g *Game) Update() error {
 		g.dirty = true
 	}
 
-	// Aperture size (W, H, D)
 	if g.keyRepeat(ebiten.KeyW) {
 		step := 5e-6
 		if shift {
@@ -696,7 +653,6 @@ func (g *Game) Update() error {
 		g.dirty = true
 	}
 
-	// Number of slits in grating
 	if inpututil.IsKeyJustPressed(ebiten.KeyBracketLeft) {
 		if g.apNSlits > 2 {
 			g.apNSlits--
@@ -710,7 +666,6 @@ func (g *Game) Update() error {
 		g.dirty = true
 	}
 
-	// Grid size
 	if inpututil.IsKeyJustPressed(ebiten.KeyN) {
 		switch g.N {
 		case 256:
@@ -725,13 +680,11 @@ func (g *Game) Update() error {
 		g.dirty = true
 	}
 
-	// Color mode toggle
 	if inpututil.IsKeyJustPressed(ebiten.KeyC) {
 		g.colorMode = 1 - g.colorMode
 		g.dirty = true
 	}
 
-	// Display mode (log / gamma / linear)
 	if inpututil.IsKeyJustPressed(ebiten.KeyD) {
 		g.displayMode = (g.displayMode + 1) % 3
 		g.dirty = true
@@ -745,12 +698,10 @@ func (g *Game) Update() error {
 		g.dirty = true
 	}
 
-	// Save PNG
 	if inpututil.IsKeyJustPressed(ebiten.KeyS) {
 		g.savePNG()
 	}
 
-	// Reset
 	if inpututil.IsKeyJustPressed(ebiten.KeyR) {
 		if g.apType == apPaint {
 			for i := range g.paintBuf {
@@ -768,7 +719,6 @@ func (g *Game) Update() error {
 		}
 	}
 
-	// Mouse painting
 	if g.apType == apPaint {
 		mx, my := ebiten.CursorPosition()
 		leftPress := ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft)
@@ -793,16 +743,11 @@ func (g *Game) Update() error {
 	return nil
 }
 
-// paintAt maps a screen coordinate to an aperture index and stamps a small disk.
-// Returns true if anything was modified. Also rasterizes a line from the previous
-// position so fast drags do not skip pixels.
 func (g *Game) paintAt(mx, my int, val float64) bool {
-	// Aperture panel rect on screen
 	if mx < panelX1 || mx >= panelX1+panelSize || my < panelY1 || my >= panelY1+panelSize {
 		g.hasLast = false
 		return false
 	}
-	// Map to aperture pixel
 	fx := float64(mx-panelX1) / float64(panelSize) * float64(g.N)
 	fy := float64(my-panelY1) / float64(panelSize) * float64(g.N)
 	ix := int(fx)
@@ -832,7 +777,6 @@ func (g *Game) paintAt(mx, my int, val float64) bool {
 	}
 
 	if g.hasLast {
-		// Rasterize line from last (in aperture coords) to current.
 		x0 := g.lastPaint.X
 		y0 := g.lastPaint.Y
 		dx := ix - x0
@@ -865,13 +809,11 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	dim := color.RGBA{150, 150, 150, 255}
 	gray := color.RGBA{130, 130, 130, 255}
 
-	// Aperture panel
 	g.drawPanel(screen, g.apImage, panelX1, panelY1, panelSize, panelSize)
 	text.Draw(screen, "t(x, y)  -  amplitude mask", face, panelX1, panelY1-10, white)
 	text.Draw(screen, fmt.Sprintf("window: %.0f um", float64(g.N)*g.dx*1e6),
 		face, panelX1, panelY1+panelSize+18, dim)
 
-	// Diffraction panel
 	g.drawPanel(screen, g.diffImage, panelX2, panelY1, panelSize, panelSize)
 	colorLbl := "mono - plasma"
 	if g.colorMode == 1 {
@@ -879,7 +821,6 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	}
 	text.Draw(screen, "I(X, Y)  -  diffraction pattern  ["+colorLbl+"]",
 		face, panelX2, panelY1-10, white)
-	// physical window of diffraction panel (based on dominant lambda)
 	lambdaShown := g.lambda
 	if g.colorMode == 1 {
 		lambdaShown = lambdaR
@@ -888,24 +829,20 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	text.Draw(screen, fmt.Sprintf("window: %s", formatLength(Wobs)),
 		face, panelX2, panelY1+panelSize+18, dim)
 
-	// Crosshair at observation center
 	cx := float32(panelX2 + panelSize/2)
 	cy := float32(panelY1 + panelSize/2)
 	cross := color.RGBA{255, 255, 255, 60}
 	vector.StrokeLine(screen, cx-6, cy, cx+6, cy, 1, cross, false)
 	vector.StrokeLine(screen, cx, cy-6, cx, cy+6, 1, cross, false)
 
-	// Status / parameters block
 	g.drawStatus(screen, face, white, dim, gray)
 
-	// Colormap legend (only in mono mode)
 	if g.colorMode == 0 {
 		g.drawLegend(screen, face, white, dim, gray)
 	}
 }
 
 func (g *Game) drawPanel(screen, img *ebiten.Image, x, y, w, h int) {
-	// Border
 	vector.StrokeRect(screen, float32(x-1), float32(y-1),
 		float32(w+2), float32(h+2), 1, color.RGBA{90, 90, 100, 255}, false)
 	if img == nil {
@@ -929,7 +866,6 @@ func (g *Game) drawStatus(screen *ebiten.Image, face *basicfont.Face,
 	apNames := []string{"rectangle", "circle", "double slit", "grating", "cross", "ring", "paint mode"}
 	apName := apNames[g.apType]
 
-	// Fresnel number - half-width of the largest feature
 	a := math.Max(g.apW/2, g.apH/2)
 	NF := a * a / (g.lambda * g.L)
 
@@ -957,7 +893,6 @@ func (g *Game) drawStatus(screen *ebiten.Image, face *basicfont.Face,
 			face, x, y+54, color.RGBA{120, 200, 130, 255})
 	}
 
-	// Controls
 	hint := "1-6 apertures | M paint | W/H/T sizes | [/] slits | +/- wavelength | L/Shift+L distance | " +
 		"C mono<>RGB | D log/gamma/lin | G gamma | N grid | S save | R reset"
 	text.Draw(screen, hint, face, x, screenHeight-10, gray)
@@ -1026,7 +961,6 @@ func formatLength(m float64) string {
 	}
 }
 
-// kept for completeness, lets future code rely on complex math without warning
 var _ = cmplx.Abs
 
 func main() {
