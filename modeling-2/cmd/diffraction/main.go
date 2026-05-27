@@ -323,6 +323,44 @@ func plasmaColor(t float64) (r, g, b uint8) {
 }
 
 // ──────────────────────────────────────────────
+// Visible wavelength → sRGB (Bruton approximation)
+// ──────────────────────────────────────────────
+
+func wavelengthToRGB(lambdaM float64) (float64, float64, float64) {
+	nm := lambdaM * 1e9
+	var r, g, b float64
+	switch {
+	case nm >= 380 && nm < 440:
+		r = -(nm - 440) / (440 - 380)
+		b = 1
+	case nm < 490:
+		g = (nm - 440) / (490 - 440)
+		b = 1
+	case nm < 510:
+		g = 1
+		b = -(nm - 510) / (510 - 490)
+	case nm < 580:
+		r = (nm - 510) / (580 - 510)
+		g = 1
+	case nm < 645:
+		r = 1
+		g = -(nm - 645) / (645 - 580)
+	case nm <= 780:
+		r = 1
+	}
+	var factor float64
+	switch {
+	case nm >= 380 && nm < 420:
+		factor = 0.3 + 0.7*(nm-380)/(420-380)
+	case nm < 700:
+		factor = 1
+	case nm <= 780:
+		factor = 0.3 + 0.7*(780-nm)/(780-700)
+	}
+	return r * factor, g * factor, b * factor
+}
+
+// ──────────────────────────────────────────────
 // Bilinear sampling on N×N grid (for RGB rescaling)
 // ──────────────────────────────────────────────
 
@@ -436,12 +474,36 @@ func (g *Game) keyRepeat(key ebiten.Key) bool {
 // Recompute pipeline
 // ──────────────────────────────────────────────
 
+// Fresnel single-FFT: умножаем апертурное поле на exp(i·k·(x²+y²)/(2L))
+// перед FFT. При N_F << 1 это даёт Фраунгофер; при N_F ~ 1 — френелевские
+// осцилляции и зависимость формы картины от λ и L, а не только масштаба.
+func (g *Game) applyFresnelPhase() {
+	N := g.N
+	dx := g.dx
+	c0 := float64(N) / 2
+	coef := math.Pi / (g.lambda * g.L) // k/(2L) = π/(λL)
+
+	parallelFor(N, func(j int) {
+		y := (float64(j) - c0) * dx
+		for i := 0; i < N; i++ {
+			x := (float64(i) - c0) * dx
+			phase := coef * (x*x + y*y)
+			cs, sn := math.Cos(phase), math.Sin(phase)
+			c := g.fftBuf[j*N+i]
+			re, im := real(c), imag(c)
+			g.fftBuf[j*N+i] = complex(re*cs-im*sn, re*sn+im*cs)
+		}
+	})
+}
+
 func (g *Game) recompute() {
 	t0 := time.Now()
 
 	buildAperture(g.apertureBuf, g.N, g.dx, g.apType, g.apW, g.apH, g.apD, g.apNSlits, g.paintBuf)
 
 	copy(g.fftBuf, g.apertureBuf)
+
+	g.applyFresnelPhase()
 
 	fft2D(g.fftBuf, g.N)
 
@@ -532,10 +594,19 @@ func (g *Game) renderDiffractionImage(Imax float64) {
 	N := g.N
 	pix := make([]byte, N*N*4)
 
-	if g.colorMode == 0 {
+	half := float64(N) / 2
+	// Fraunhofer: X = λ·L·fx. Экран физически фиксирован под defaultLambda,
+	// поэтому при изменении λ масштабируем выборку из спектра.
+	scale := defaultLambda / g.lambda
+
+	switch g.colorMode {
+	case 0:
 		parallelFor(N, func(j int) {
 			for i := 0; i < N; i++ {
-				v := transformIntensity(g.intensity[j*N+i], Imax, g.displayMode, g.gamma, g.logAlpha)
+				kx := half + (float64(i)-half)*scale
+				ky := half + (float64(j)-half)*scale
+				val := bilinear(g.intensity, N, kx, ky)
+				v := transformIntensity(val, Imax, g.displayMode, g.gamma, g.logAlpha)
 				r, gg, b := plasmaColor(v)
 				idx := (j*N + i) * 4
 				pix[idx] = r
@@ -544,16 +615,31 @@ func (g *Game) renderDiffractionImage(Imax float64) {
 				pix[idx+3] = 255
 			}
 		})
-	} else {
-		half := float64(N) / 2
+	case 1:
+		wr, wg, wb := wavelengthToRGB(g.lambda)
+		parallelFor(N, func(j int) {
+			for i := 0; i < N; i++ {
+				kx := half + (float64(i)-half)*scale
+				ky := half + (float64(j)-half)*scale
+				val := bilinear(g.intensity, N, kx, ky)
+				v := transformIntensity(val, Imax, g.displayMode, g.gamma, g.logAlpha)
+				idx := (j*N + i) * 4
+				pix[idx] = uint8(v * wr * 255)
+				pix[idx+1] = uint8(v * wg * 255)
+				pix[idx+2] = uint8(v * wb * 255)
+				pix[idx+3] = 255
+			}
+		})
+	default:
+		_ = scale
 		lambdas := [3]float64{lambdaR, lambdaG, lambdaB}
 		parallelFor(N, func(j int) {
 			for i := 0; i < N; i++ {
 				var ch [3]uint8
 				for c := 0; c < 3; c++ {
-					scale := lambdaR / lambdas[c]
-					kx := half + (float64(i)-half)*scale
-					ky := half + (float64(j)-half)*scale
+					s := lambdaR / lambdas[c]
+					kx := half + (float64(i)-half)*s
+					ky := half + (float64(j)-half)*s
 					val := bilinear(g.intensity, N, kx, ky)
 					t := transformIntensity(val, Imax, g.displayMode, g.gamma, g.logAlpha)
 					ch[c] = uint8(t * 255)
@@ -681,7 +767,7 @@ func (g *Game) Update() error {
 	}
 
 	if inpututil.IsKeyJustPressed(ebiten.KeyC) {
-		g.colorMode = 1 - g.colorMode
+		g.colorMode = (g.colorMode + 1) % 3
 		g.dirty = true
 	}
 
@@ -815,14 +901,15 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		face, panelX1, panelY1+panelSize+18, dim)
 
 	g.drawPanel(screen, g.diffImage, panelX2, panelY1, panelSize, panelSize)
-	colorLbl := "mono - plasma"
-	if g.colorMode == 1 {
-		colorLbl = "RGB (650/550/450 nm)"
+	colorLbls := [3]string{
+		"mono - plasma",
+		fmt.Sprintf("physical color (%.0f nm)", g.lambda*1e9),
+		"RGB (650/550/450 nm)",
 	}
-	text.Draw(screen, "I(X, Y)  -  diffraction pattern  ["+colorLbl+"]",
+	text.Draw(screen, "I(X, Y)  -  diffraction pattern  ["+colorLbls[g.colorMode]+"]",
 		face, panelX2, panelY1-10, white)
-	lambdaShown := g.lambda
-	if g.colorMode == 1 {
+	lambdaShown := defaultLambda
+	if g.colorMode == 2 {
 		lambdaShown = lambdaR
 	}
 	Wobs := lambdaShown * g.L / g.dx
@@ -870,10 +957,8 @@ func (g *Game) drawStatus(screen *ebiten.Image, face *basicfont.Face,
 	NF := a * a / (g.lambda * g.L)
 
 	dispNames := []string{"log", "gamma", "linear"}
-	colorName := "mono+plasma"
-	if g.colorMode == 1 {
-		colorName = "RGB"
-	}
+	colorNames := []string{"mono+plasma", "physical-λ", "RGB"}
+	colorName := colorNames[g.colorMode]
 
 	text.Draw(screen, fmt.Sprintf("wl = %.0f nm   L = %.2f m   N = %d   N_F = %.3f",
 		g.lambda*1e9, g.L, g.N, NF), face, x, y, white)
@@ -885,16 +970,20 @@ func (g *Game) drawStatus(screen *ebiten.Image, face *basicfont.Face,
 		colorName, dispNames[g.displayMode], g.gamma, g.lastRecomputeMs),
 		face, x, y+36, dim)
 
-	if NF > 0.1 {
-		text.Draw(screen, "! N_F > 0.1: far field broken, pattern is approximate",
-			face, x, y+54, color.RGBA{240, 180, 80, 255})
-	} else {
-		text.Draw(screen, "OK  N_F << 1: Fraunhofer regime",
+	switch {
+	case NF < 0.05:
+		text.Draw(screen, "Fraunhofer regime  (N_F << 1)",
 			face, x, y+54, color.RGBA{120, 200, 130, 255})
+	case NF < 1:
+		text.Draw(screen, "Fresnel regime  (N_F ~ 0.05..1)  -  ring/oscillation features visible",
+			face, x, y+54, color.RGBA{200, 200, 130, 255})
+	default:
+		text.Draw(screen, "near field  (N_F > 1)  -  scalar Fresnel still ok if dx < sqrt(λL/N)",
+			face, x, y+54, color.RGBA{240, 180, 80, 255})
 	}
 
 	hint := "1-6 apertures | M paint | W/H/T sizes | [/] slits | +/- wavelength | L/Shift+L distance | " +
-		"C mono<>RGB | D log/gamma/lin | G gamma | N grid | S save | R reset"
+		"C plasma/λ-color/RGB | D log/gamma/lin | G gamma | N grid | S save | R reset"
 	text.Draw(screen, hint, face, x, screenHeight-10, gray)
 }
 
